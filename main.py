@@ -65,33 +65,43 @@ class AnaliseFundamentalista:
         analise = []
         for t, d in self.dados.items():
             score = 0
-            motivos = []
+            justificativas = []
+            premissas = []
             
             # Identificação de Perfil
             e_best = any(k in d['sector'] for k in CONFIG['SETORES_BEST']) or d['type'] == 'FII'
             
-            # Score
+            # Score e Justificativas
             if d['dy'] >= CONFIG['DY_MINIMO']: 
                 score += 2
-                motivos.append("Bom Pagador")
+                justificativas.append(f"Gerador de Renda (DY {d['dy']:.1%}): Ativo cumpre função de fluxo de caixa.")
+            
             if e_best: 
                 score += 1
-                motivos.append("Setor Seguro")
+                premissas.append(f"Setor Resiliente ({d['sector']}): Historicamente menos volátil em crises.")
+            
             if d['momentum'] > 0.05: 
                 score += 1.5
-                motivos.append("Tendência Alta")
+                justificativas.append(f"Momentum Positivo (+{d['momentum']:.1%}): Mercado demonstra interesse recente.")
+            
             if d['type'] == 'FII' and d['price'] < 2.0:
                 score -= 5 # Penalidade Penny Stock
+                premissas.append("Risco de Liquidez/Grupamento: Valor nominal muito baixo (Penny Stock).")
 
             # Definição de Papel na Carteira
-            # Se já tem na carteira, não descartamos, apenas diagnosticamos
             perfil_ativo = "NEUTRO"
             if score >= 3: perfil_ativo = "TOP PICK"
             elif score >= 2 and d['dy'] >= CONFIG['DY_MINIMO']: perfil_ativo = "RENDA"
             elif d['momentum'] > 0.10: perfil_ativo = "CRESCIMENTO"
             else: perfil_ativo = "VENDER/REVISAR" # Score baixo
 
-            analise.append({**d, 'perfil': perfil_ativo, 'score': score, 'motivos': ", ".join(motivos)})
+            analise.append({
+                **d, 
+                'perfil': perfil_ativo, 
+                'score': score, 
+                'justificativa_tecnica': " ".join(justificativas),
+                'premissas_negocio': " ".join(premissas)
+            })
         
         return pd.DataFrame(analise).sort_values(by='score', ascending=False)
 
@@ -107,80 +117,96 @@ class RebalanceadorCarteira:
         patrimonio_total = valor_investido + self.caixa
 
         # 2. Separar Valor Atual por Categoria
-        # Vamos assumir que FIIs e Ações High Yield são "Renda", resto é "Crescimento"
         df['bucket'] = df.apply(lambda x: 'RENDA' if (x['type']=='FII' or x['dy'] >= CONFIG['DY_MINIMO']) else 'CRESCIMENTO', axis=1)
         
         atual_renda = df[df['bucket'] == 'RENDA']['valor_posicao'].sum()
         atual_cresc = df[df['bucket'] == 'CRESCIMENTO']['valor_posicao'].sum()
 
-        # 3. Metas
+        # 3. Metas e Diagnóstico
         meta_renda = patrimonio_total * CONFIG['ALOCACAO_RENDA']
         meta_cresc = patrimonio_total * CONFIG['ALOCACAO_CRESCIMENTO']
 
-        print("\n💼 --- DIAGNÓSTICO DE CARTEIRA ---")
-        print(f"Patrimônio Total (com aporte): R$ {patrimonio_total:.2f}")
-        print("--------------------------------------------------")
-        print("CATEGORIA    | ATUAL (%)       | META (%) | STATUS")
+        print("\n" + "="*60)
+        print("💼 RELATÓRIO DE GESTÃO DE CARTEIRA E RISCO")
+        print("="*60)
+        
+        print(f"\n📊 DIAGNÓSTICO DE ALOCAÇÃO (Patrimônio: R$ {patrimonio_total:.2f})")
+        print(f"O rebalanceamento visa alinhar a exposição ao risco conforme a estratégia definida.")
+        print("-" * 60)
+        print("CATEGORIA    | ATUAL (%)       | META (%) | DESVIO   | STATUS")
         
         p_renda = (atual_renda / patrimonio_total) if patrimonio_total > 0 else 0
         p_cresc = (atual_cresc / patrimonio_total) if patrimonio_total > 0 else 0
         
-        status_renda = "✅ OK" if abs(p_renda - CONFIG['ALOCACAO_RENDA']) < 0.05 else ("🔻 Abaixo" if p_renda < CONFIG['ALOCACAO_RENDA'] else "🔺 Acima")
-        status_cresc = "✅ OK" if abs(p_cresc - CONFIG['ALOCACAO_CRESCIMENTO']) < 0.05 else ("🔻 Abaixo" if p_cresc < CONFIG['ALOCACAO_CRESCIMENTO'] else "🔺 Acima")
+        # Cálculo de Desvio
+        desvio_renda = p_renda - CONFIG['ALOCACAO_RENDA']
+        desvio_cresc = p_cresc - CONFIG['ALOCACAO_CRESCIMENTO']
+        
+        status_renda = "✅ Na Meta" if abs(desvio_renda) < 0.05 else ("🔻 Sub-alocado" if desvio_renda < 0 else "🔺 Super-alocado")
+        status_cresc = "✅ Na Meta" if abs(desvio_cresc) < 0.05 else ("🔻 Sub-alocado" if desvio_cresc < 0 else "🔺 Super-alocado")
 
-        print(f"Renda        | R$ {atual_renda:.2f} ({p_renda:.1%}) | {CONFIG['ALOCACAO_RENDA']:.0%}      | {status_renda}")
-        print(f"Crescimento  | R$ {atual_cresc:.2f} ({p_cresc:.1%}) | {CONFIG['ALOCACAO_CRESCIMENTO']:.0%}      | {status_cresc}")
-        print("--------------------------------------------------")
+        print(f"Renda        | R$ {atual_renda:,.2f} ({p_renda:.1%}) | {CONFIG['ALOCACAO_RENDA']:.0%}      | {desvio_renda:+.1%}   | {status_renda}")
+        print(f"Crescimento  | R$ {atual_cresc:,.2f} ({p_cresc:.1%}) | {CONFIG['ALOCACAO_CRESCIMENTO']:.0%}      | {desvio_cresc:+.1%}   | {status_cresc}")
+        
+        if abs(desvio_renda) > 0.10:
+            print(f"\n⚠️ ALERTA DE RISCO: Desvio relevante em Renda ({desvio_renda:+.1%}). Ajuste prioritário recomendado.")
 
-        # 4. Lógica de Aporte (Onde colocar o dinheiro novo?)
-        # Calculamos o "GAP" (quanto falta para chegar na meta)
+        # 4. Lógica de Aporte
         gap_renda = meta_renda - atual_renda
         gap_cresc = meta_cresc - atual_cresc
 
-        print(f"\n🛒 --- SUGESTÃO DE APORTE (R$ {self.caixa:.2f}) ---")
+        print(f"\n🛒 PLANEJAMENTO DE APORTE (Disponível: R$ {self.caixa:.2f})")
         
         saldo = self.caixa
-        
-        # Filtra apenas ativos bons (Score > 2) para reforçar posição
         ativos_qualificados = df[df['score'] >= 2].copy()
         
-        # Prioridade: Encher o balde que está mais vazio (maior GAP)
+        justificativa_aporte = ""
         if gap_renda > gap_cresc:
-            print(f"👉 Prioridade: Reforçar RENDA (Deficit: R$ {gap_renda:.2f})")
+            justificativa_aporte = "Foco em aumentar a base de Renda Passiva para atingir a meta de 80%."
             ordem_compra = ativos_qualificados[ativos_qualificados['bucket'] == 'RENDA']
         else:
-            print(f"👉 Prioridade: Reforçar CRESCIMENTO (Deficit: R$ {gap_cresc:.2f})")
+            justificativa_aporte = "Foco em Potencialização de Patrimônio (Crescimento) para equilibrar o portfólio."
             ordem_compra = ativos_qualificados[ativos_qualificados['bucket'] == 'CRESCIMENTO']
 
-        # Se não tiver ativos qualificados no bucket prioritário, olha tudo
         if ordem_compra.empty:
-            print("⚠️ Sem ativos de alta qualidade no setor prioritário. Olhando melhores oportunidades gerais...")
+            justificativa_aporte += " (Sem ativos 'Top Pick' no setor prioritário, buscando melhores oportunidades gerais)"
             ordem_compra = ativos_qualificados
 
-        # Ordena pelos melhores scores
-        ordem_compra = ordem_compra.sort_values(by=['score', 'dy'], ascending=False)
+        print(f"👉 Estratégia: {justificativa_aporte}")
 
-        # Executa compra simulada
+        ordem_compra = ordem_compra.sort_values(by=['score', 'dy'], ascending=False)
+        
+        total_gasto = 0
+        novos_dividendos_ano = 0
+
+        print("\n📋 ORDENS SUGERIDAS:")
         for _, ativo in ordem_compra.iterrows():
             if saldo < ativo['price']: continue
             
-            # Tenta preencher o GAP, mas limitado ao saldo
             qtd = math.floor(saldo / ativo['price'])
             if qtd > 0:
                 custo = qtd * ativo['price']
                 saldo -= custo
-                print(f"   ✅ COMPRAR {qtd}x {ativo['symbol']} (R$ {ativo['price']:.2f}) -> {ativo['perfil']}")
-        
+                total_gasto += custo
+                div_projetado = custo * ativo['dy']
+                novos_dividendos_ano += div_projetado
+                
+                print(f"   ✅ COMPRAR {qtd}x {ativo['symbol']} a R$ {ativo['price']:.2f}")
+                print(f"      ↳ Motivo: {ativo['justificativa_tecnica']}")
+                print(f"      ↳ Impacto: +R$ {div_projetado:.2f}/ano em dividendos estimados.")
+
+        print("\n📈 MÉTRICAS DE IMPACTO DO APORTE")
+        print(f"• Total Alocado:       R$ {total_gasto:.2f}")
+        print(f"• Incremento de Renda: +R$ {novos_dividendos_ano:.2f} / ano (estimado)")
         if saldo > 0:
-            print(f"   💵 Sobra em caixa: R$ {saldo:.2f}")
-            print("   (Dica: Acumule para comprar um ativo mais caro na próxima ou adicione um novo ativo à lista JSON)")
+            print(f"• Sobra de Caixa:      R$ {saldo:.2f}")
         
         # Alerta de Ativos Ruins
         lixo = df[df['perfil'] == 'VENDER/REVISAR']
         if not lixo.empty:
-            print("\n⚠️ --- ATENÇÃO (Revisar Fundamentos) ---")
+            print("\n🚨 PONTO DE ATENÇÃO (Revisão Necessária)")
             for _, row in lixo.iterrows():
-                print(f"   ❌ {row['symbol']}: Score Baixo ({row['score']}). Considere vender ou estudar melhor.")
+                print(f"   ❌ {row['symbol']}: Score {row['score']}. {row['justificativa_tecnica']}")
 
 # --- EXECUÇÃO ---
 

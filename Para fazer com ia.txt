@@ -1,0 +1,72 @@
+algorithm_name: "O Lollapalooza Tupiniquim"
+description: "Algoritmo híbrido para seleção de ações brasileiras (B3) combinando Value Investing profundo (Graham) com Quality Investing (Buffett/Munger)."
+target_market: "Brasil (B3)"
+currency: "BRL"
+
+global_filters:
+  # Filtros iniciais para garantir liquidez e governança no Brasil
+  liquidity_check:
+    metric: "liquidez_diaria_media_30d"
+    min_value: 1000000 # R$ 1 milhão para evitar armadilhas de liquidez
+  governance_check:
+    metric: "segmento_listagem"
+    preferred: ["Novo Mercado", "Nível 2"] # Proxy de governança (Munger)
+  sector_exclusions:
+    - "Seguradoras com histórico curto"
+    - "Empresas em Recuperação Judicial"
+    - "Aéreas" # Setor historicamente evitado por Buffett
+
+stages:
+  - stage_1: "O Filtro de Segurança (Graham)"
+    description: "Eliminar o risco de ruína financeira e garantir preço justo."
+    criteria:
+      - name: "Solvencia"
+        metrics:
+          - "divida_liquida_ebitda": { max: 3.0 } # No Brasil, juros altos exigem alavancagem menor
+          - "liquidez_corrente": { min: 1.0 }
+      - name: "Valuation_Graham_Adaptado"
+        # Fórmula de Graham adaptada: Raiz(22.5 * LPA * VPA).
+        # No Brasil, exigimos Margem de Segurança maior devido ao risco-país.
+        logic: "Preco_Atual < (0.70 * Valor_Intrinseco_Graham)" # 30% de Margem de Segurança
+      - name: "Consistencia_Lucros"
+        metric: "anos_lucro_consecutivos"
+        min_value: 5 # Graham exigia 10, adaptado para 5 pela volatilidade BR
+
+  - stage_2: "O Filtro de Qualidade (Buffett)"
+    description: "Identificar fossos econômicos através de métricas de rentabilidade."
+    criteria:
+      - name: "Rentabilidade_Elite"
+        metrics:
+          - "roe_medio_5a": { min: 15.0 } # ROE alto e estável indica vantagem competitiva
+          - "roic_medio_5a": { min: 12.0 } # Retorno sobre capital investido > Custo de capital (WACC Brasil ~11-13%)
+      - name: "Margem_Liquida"
+        metric: "margem_liquida_atual"
+        min_value: 10.0 # Margens finas são perigosas na inflação brasileira
+
+  - stage_3: "O Filtro de Racionalidade (Munger)"
+    description: "Evitar a estupidez e buscar o efeito Lollapalooza (fatores qualitativos/comportamentais)."
+    criteria:
+      - name: "Cannibal_Check"
+        # Empresas que recompram ações consistentemente (Skin in the game)
+        metric: "recompra_acoes_ultimos_2a"
+        condition: "existente"
+        weight: "bonus"
+      - name: "Inflacao_Proof"
+        # Empresas com baixo CAPEX conseguem repassar inflação (See's Candies logic)
+        logic: "capex_sobre_fluxo_caixa_operacional < 0.50"
+
+scoring_system:
+  # Sistema de pontuação para ranking final
+  base_score: 0
+  modifiers:
+    - if: "P/L < 10 e ROE > 20"
+      add: 20 points # O "Santo Graal": Barato e Bom
+    - if: "Divida_Liquida < 0"
+      add: 10 points # Caixa Líquido (Raridade no Brasil)
+    - if: "CAGR_Lucros_5a > 10%"
+      add: 15 points # Crescimento com qualidade
+
+execution:
+  action: "Ranking Decrescente por Score"
+  top_pick_limit: 10
+  rebalance_frequency: "Anual" # Evitar giro excessivo (Taxas e Impostos)

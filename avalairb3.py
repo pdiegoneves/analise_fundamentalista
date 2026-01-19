@@ -91,7 +91,8 @@ def buscar_candidatos_fundamentus():
                 'tipo': 'ACAO',
                 'setor': 'Geral', 
                 'preco_base': row['cotacao'],
-                'dy_base': row['dy']
+                'dy_base': row['dy'],
+                'p_vp': row['pvp']
             })
     except Exception as e:
         print(f"❌ Erro ao buscar Ações: {e}")
@@ -116,7 +117,8 @@ def buscar_candidatos_fundamentus():
                 'tipo': 'FII',
                 'setor': row['segmento'],
                 'preco_base': row['cotacao'],
-                'dy_base': row['dy']
+                'dy_base': row['dy'],
+                'p_vp': row['p_vp']
             })
 
     return pd.DataFrame(candidatos)
@@ -156,32 +158,61 @@ def refinar_com_yfinance(df_candidatos):
             # Momentum
             preco_6m = float(hist['Close'].iloc[0])
             momentum = (preco_atual / preco_6m) - 1
+            volatilidade = hist['Close'].pct_change().std() * (252**0.5) # Volatilidade Anualizada
 
             # Score System
             score = 0
-            motivos = []
+            analise_tecnica = []
+            premissas_negocio = []
+            
+            # --- ANÁLISE DE DIVIDENDOS ---
+            dy_score = 0
+            if row['dy_base'] > 0.12: 
+                score += 2.5
+                analise_tecnica.append(f"Dividend Yield Excepcional ({row['dy_base']:.1%}) indica forte fluxo de caixa ou desvalorização excessiva.")
+            elif row['dy_base'] >= 0.08: 
+                score += 2
+                analise_tecnica.append(f"Dividend Yield Atrativo ({row['dy_base']:.1%}), acima da Selic real esperada.")
+            elif row['dy_base'] >= 0.06:
+                score += 1
+                analise_tecnica.append(f"Dividend Yield Base ({row['dy_base']:.1%}) compõe renda passiva mínima.")
 
-            # DY
-            if row['dy_base'] > 0.10: score += 2.5
-            elif row['dy_base'] >= 0.06: score += 2
-            motivos.append(f"DY {row['dy_base']:.1%}")
+            # --- ANÁLISE DE VALUATION (P/VP) ---
+            pvp = row.get('p_vp', 0)
+            if pvp > 0:
+                if pvp < 0.85:
+                    score += 2
+                    premissas_negocio.append(f"Desconto Patrimonial Severo (P/VP {pvp:.2f}): O mercado precifica o ativo abaixo do custo de reposição.")
+                elif pvp < 1.0:
+                    score += 1
+                    premissas_negocio.append(f"Negociado Abaixo do Patrimonial (P/VP {pvp:.2f}): Margem de segurança teórica.")
+                elif pvp > 1.20:
+                    score -= 0.5
+                    premissas_negocio.append(f"Ágio sobre Patrimônio (P/VP {pvp:.2f}): Mercado paga prêmio pela qualidade ou crescimento esperado.")
 
-            # Momentum
+            # --- ANÁLISE DE MOMENTUM E TENDÊNCIA ---
             if momentum > 0.05: 
                 score += 1.5
-                motivos.append(f"Alta 6m ({momentum:.1%})")
+                analise_tecnica.append(f"Tendência de Alta de Curto Prazo (+{momentum:.1%} em 6m): Interesse comprador ativo.")
             elif momentum < -0.10:
                 score -= 1 
-
+                analise_tecnica.append(f"Tendência de Baixa (-{abs(momentum):.1%} em 6m): Cuidado com 'faca caindo' (momentum negativo).")
+            
+            # --- FATORES QUALITATIVOS (Setor) ---
             # Bonus Setor FII
             if row['tipo'] == 'FII' and isinstance(row['setor'], str):
-                 if any(x in row['setor'] for x in ['Recebíveis', 'Papel', 'Logística', 'Híbrido', 'Shoppings']):
+                 if any(x in row['setor'] for x in ['Recebíveis', 'Papel']):
+                    if row['dy_base'] > 0.10 and pvp < 1.05:
+                        score += 1
+                        premissas_negocio.append("Setor de Papel/Recebíveis beneficia-se de juros altos, convertendo indexadores em dividendos rápidos.")
+                 elif any(x in row['setor'] for x in ['Logística']):
                     score += 0.5
+                    premissas_negocio.append("Setor Logístico resiliente com demanda por e-commerce e vacância controlada.")
 
             # Perfil
             perfil = "NEUTRO"
-            if score >= 3.5: perfil = "💎 JOIA RARA"
-            elif score >= 2.5: perfil = "✅ COMPRA FORTE"
+            if score >= 4.5: perfil = "💎 JOIA RARA"
+            elif score >= 3.0: perfil = "✅ COMPRA FORTE"
             
             if score >= 2:
                 resultados_finais.append({
@@ -190,10 +221,13 @@ def refinar_com_yfinance(df_candidatos):
                     'setor': row['setor'],
                     'preco': preco_atual,
                     'dy': row['dy_base'],
+                    'p_vp': pvp,
                     'momentum': momentum,
+                    'volatilidade': volatilidade,
                     'score': score,
                     'perfil': perfil,
-                    'motivos': ", ".join(motivos)
+                    'justificativa_tecnica': " ".join(analise_tecnica),
+                    'premissas_negocio': " ".join(premissas_negocio)
                 })
 
         except Exception:
@@ -212,25 +246,44 @@ else:
     if not df_final.empty:
         top_pick = df_final.iloc[0]
         qtd_compra = math.floor(DINHEIRO_DISPONIVEL / top_pick['preco'])
-        sobra = DINHEIRO_DISPONIVEL - (qtd_compra * top_pick['preco'])
+        investimento_total = qtd_compra * top_pick['preco']
+        sobra = DINHEIRO_DISPONIVEL - investimento_total
+        renda_estimada_ano = investimento_total * top_pick['dy']
+        renda_estimada_mes = renda_estimada_ano / 12
 
-        print("\n🏆 --- O VENCEDOR DA VARREDURA ---")
-        print(f"Ativo:   {top_pick['ticker']} ({top_pick['setor']})")
-        print(f"Preço:   R$ {top_pick['preco']:.2f}")
-        print(f"DY:      {top_pick['dy']:.1%}")
-        print(f"Score:   {top_pick['score']}")
-        print(f"Motivo:  {top_pick['motivos']}")
-        print("\n🛒 ORDEM SUGERIDA:")
-        print(f"Comprar: {qtd_compra} unidades")
-        print(f"Total:   R$ {qtd_compra * top_pick['preco']:.2f}")
-        print(f"Troco:   R$ {sobra:.2f}")
+        print("\n" + "="*60)
+        print(f"🏆 RELATÓRIO DE RECOMENDAÇÃO: {top_pick['ticker']}")
+        print("="*60)
+        
+        print(f"\n📊 DADOS GERAIS")
+        print(f"• Setor:        {top_pick['setor']}")
+        print(f"• Preço Atual:  R$ {top_pick['preco']:.2f}")
+        print(f"• P/VP:         {top_pick['p_vp']:.2f}")
+        print(f"• Score:        {top_pick['score']:.1f}/10 ({top_pick['perfil']})")
 
-        print("\n📜 --- TOP 10 MELHORES ALTERNATIVAS ---")
-        display_cols = ['ticker', 'preco', 'dy', 'momentum', 'score', 'perfil']
-        print(df_final[display_cols].head(10).to_string(index=False, formatters={
+        print(f"\n💡 JUSTIFICATIVA TÉCNICA")
+        print(f"{top_pick['justificativa_tecnica']}")
+
+        print(f"\n🏢 PREMISSAS DE NEGÓCIO")
+        print(f"{top_pick['premissas_negocio']}")
+
+        print(f"\n📈 MÉTRICAS DE IMPACTO (Projeção)")
+        print(f"• Aporte Sugerido:    R$ {investimento_total:.2f} ({qtd_compra} cotas)")
+        print(f"• Dividend Yield:     {top_pick['dy']:.1%}")
+        print(f"• Renda Anual Est.:   R$ {renda_estimada_ano:.2f}")
+        print(f"• Renda Mensal Est.:  R$ {renda_estimada_mes:.2f}")
+        print(f"• Retorno Potencial:  A combinação de DY + Correção de P/VP sugere upside atrativo.")
+
+        print("\n" + "-"*60)
+        print("📜 TOP 5 ALTERNATIVAS (Ranking de Força)")
+        print("-"*60)
+        display_cols = ['ticker', 'preco', 'dy', 'p_vp', 'score', 'perfil']
+        print(df_final[display_cols].head(5).to_string(index=False, formatters={
             'preco': 'R$ {:,.2f}'.format,
             'dy': '{:,.1%}'.format,
-            'momentum': '{:,.1%}'.format
+            'p_vp': '{:,.2f}'.format,
+            'score': '{:,.1f}'.format
         }))
+        print("\n⚠️ Aviso Legal: Este relatório é gerado automaticamente por algoritmos quantitativos. Não constitui recomendação de compra. Analise seus riscos.")
     else:
-        print("⚠️ Ativos encontrados na triagem bruta, mas reprovados na análise fina.")
+        print("⚠️ Ativos encontrados na triagem bruta, mas reprovados na análise fina (Score insuficiente).")
